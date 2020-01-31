@@ -109,6 +109,68 @@ RCT_EXPORT_METHOD(findMaxEdge
   }
 }
 
+RCT_EXPORT_METHOD(detectColorsWithRanges
+                  : (NSString *)imageAsBase64
+                  : (NSDictionary *)ranges resolver
+                  : (RCTPromiseResolveBlock)resolve rejecter
+                  : (RCTPromiseRejectBlock)reject) {
+    @try {
+        UIImage *image = [self decodeBase64ToImage:imageAsBase64];
+        cv::Mat matImage = [self convertUIImageToCVMat:image];
+
+        // converting image's color space to HSV
+        cv::Mat matImageHSV;
+        cv::cvtColor(matImage, matImageHSV, CV_BGR2HSV);
+
+        // get the original area
+        cv::Mat matImageGray;
+        cv::cvtColor(matImage, matImageGray, CV_BGR2GRAY);
+        float imageArea = (float)cv::countNonZero(matImageGray);
+//        NSLog(@"imageArea: %f", imageArea);
+
+        // do the ranges
+        NSMutableDictionary *coverages = [NSMutableDictionary dictionary];
+        NSArray *keys = [ranges allKeys];
+        for(NSString *key in keys) {
+            NSArray *range = [ranges objectForKey:key];
+//            NSLog(@"range: %@", range);
+            
+            NSArray *lowerRange = [range objectAtIndex:0];
+            NSArray *higherRange = [range objectAtIndex:1];
+//            NSLog(@"lower range: %@", lowerRange);
+//            NSLog(@"higher range: %@", higherRange);
+            
+            double l1 = [[lowerRange objectAtIndex:0] doubleValue];
+            double l2 = [[lowerRange objectAtIndex:1] doubleValue];
+            double l3 = [[lowerRange objectAtIndex:2] doubleValue];
+            
+            double h1 = [[higherRange objectAtIndex:0] doubleValue];
+            double h2 = [[higherRange objectAtIndex:1] doubleValue];
+            double h3 = [[higherRange objectAtIndex:2] doubleValue];
+            
+            cv::Mat matImageHSVOut;
+            cv::inRange(matImageHSV, cv::Scalar(l1, l2, l3), cv::Scalar(h1, h2, h3), matImageHSVOut);
+            
+            
+            float outputArea = (float)cv::countNonZero(matImageHSVOut);
+            float coverage = outputArea / (imageArea / 100);
+//            NSLog(@"%@ coverage: %f", key, coverage);
+            
+            // destroy
+            matImageHSVOut.release();
+            [coverages setObject:[NSNumber numberWithFloat:coverage] forKey:key];
+        }
+        
+        matImageHSV.release();
+        matImage.release();
+
+        resolve(coverages);
+    } @catch (NSException *exception) {
+      NSError *error;
+      reject(@"error", exception.reason, error);
+    }
+}
+
 // native code
 - (NSString *)imageToNSString:(UIImage *)image {
   NSData *imageData = UIImagePNGRepresentation(image);
@@ -139,6 +201,43 @@ RCT_EXPORT_METHOD(findMaxEdge
   CGContextRelease(contextRef);
 
   return cvMat;
+}
+
+-(UIImage *)UIImageFromCVMat:(cv::Mat)cvMat
+{
+  NSData *data = [NSData dataWithBytes:cvMat.data length:cvMat.elemSize()*cvMat.total()];
+  CGColorSpaceRef colorSpace;
+
+  if (cvMat.elemSize() == 1) {
+      colorSpace = CGColorSpaceCreateDeviceGray();
+  } else {
+      colorSpace = CGColorSpaceCreateDeviceRGB();
+  }
+
+  CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+
+  // Creating CGImage from cv::Mat
+  CGImageRef imageRef = CGImageCreate(cvMat.cols,                                 //width
+                                     cvMat.rows,                                 //height
+                                     8,                                          //bits per component
+                                     8 * cvMat.elemSize(),                       //bits per pixel
+                                     cvMat.step[0],                            //bytesPerRow
+                                     colorSpace,                                 //colorspace
+                                     kCGImageAlphaNone|kCGBitmapByteOrderDefault,// bitmap info
+                                     provider,                                   //CGDataProviderRef
+                                     NULL,                                       //decode
+                                     false,                                      //should interpolate
+                                     kCGRenderingIntentDefault                   //intent
+                                     );
+
+
+  // Getting UIImage from CGImage
+  UIImage *finalImage = [UIImage imageWithCGImage:imageRef];
+  CGImageRelease(imageRef);
+  CGDataProviderRelease(provider);
+  CGColorSpaceRelease(colorSpace);
+
+  return finalImage;
 }
 
 - (UIImage *)decodeBase64ToImage:(NSString *)strEncodeData {
